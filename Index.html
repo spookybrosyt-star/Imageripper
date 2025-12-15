@@ -1,0 +1,523 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Image Ripper</title>
+    <!-- Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Load EXIF-JS Library for advanced metadata extraction (like GPS) -->
+    <script src="https://cdn.jsdelivr.net/npm/exif-js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #111827; /* deep dark gray (gray-900) */
+            color: #f3f4f6; /* gray-100 */
+        }
+        .container-card {
+            /* Adjusted shadow for dark mode */
+            box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.3), 0 10px 10px -5px rgba(0, 0, 0, 0.1);
+        }
+        /* Style for result items to allow wrapping */
+        .result-item {
+            display: flex;
+            flex-wrap: wrap; 
+            padding: 0.75rem 0;
+            border-bottom: 1px dashed #374151; /* Darker dashed line (gray-700) */
+        }
+        .result-item:last-child {
+            border-bottom: none;
+        }
+    </style>
+</head>
+<body class="p-4 sm:p-8 min-h-screen">
+
+    <div class="max-w-4xl mx-auto">
+        <!-- Header - Changed Title to "Image Ripper" -->
+        <header class="text-center mb-10">
+            <h1 class="text-3xl font-extrabold text-white mb-2">Image Ripper</h1>
+            <p class="text-gray-400">Inspect and permanently remove hidden tracking data from JPEGs before sharing.</p>
+        </header>
+
+        <!-- Input Section -->
+        <div class="container-card bg-gray-800 p-6 rounded-xl mb-8">
+            <label for="imageUpload" class="block text-lg font-medium text-gray-100 mb-3">Select an Image File (JPEG recommended for full EXIF data):</label>
+            <input type="file" id="imageUpload" accept="image/jpeg,image/png,image/gif" class="w-full text-sm text-gray-300
+                file:mr-4 file:py-2 file:px-4
+                file:rounded-full file:border-0
+                file:text-sm file:font-semibold
+                file:bg-indigo-600 file:text-white
+                hover:file:bg-indigo-700 cursor-pointer
+            " onchange="extractImageMetadata()">
+
+            <div class="mt-6 flex justify-end space-x-4">
+                <button id="mangleBtn" onclick="mangleMetadata()" class="px-6 py-2 bg-red-600 text-white font-semibold rounded-lg hover:bg-red-700 transition duration-150 shadow-md">
+                    Strip & Download (JPEG only)
+                </button>
+                <button onclick="clearInputAndResults()" class="px-6 py-2 bg-gray-600 text-white font-semibold rounded-lg hover:bg-gray-700 transition duration-150 shadow-md">
+                    Clear
+                </button>
+            </div>
+        </div>
+
+        <!-- Output Section -->
+        <div id="resultsContainer" class="hidden">
+            <h2 class="text-2xl font-bold text-gray-100 mb-4">Extracted File Data</h2>
+            <div class="flex flex-col lg:flex-row lg:space-x-8">
+                <!-- Image Preview Column -->
+                <div class="w-full lg:w-1/3 container-card bg-gray-800 p-6 rounded-xl mb-6 lg:mb-0">
+                    <h3 class="text-xl font-semibold text-gray-100 mb-4 border-b pb-2 border-gray-700">Preview</h3>
+                    <div class="flex items-center justify-center h-48 bg-gray-700 rounded-lg overflow-hidden">
+                        <img id="imagePreview" src="" alt="Image Preview" class="max-w-full max-h-full object-contain">
+                    </div>
+                </div>
+
+                <!-- Metadata List Column -->
+                <div class="w-full lg:w-2/3 container-card bg-gray-800 p-6 rounded-xl">
+                    <h3 class="text-xl font-semibold text-gray-100 mb-4 border-b pb-2 border-gray-700">Attributes</h3>
+                    <div id="resultsList">
+                        <!-- Metadata list items populated here -->
+                    </div>
+                </div>
+            </div>
+            <div id="gpsMapLink" class="mt-6 p-4 bg-blue-900 text-blue-300 rounded-lg hidden">
+                <p class="text-sm font-medium">GPS Coordinates Found! <a id="mapLink" href="#" target="_blank" class="text-blue-400 underline hover:text-blue-200">Click here to view on map.</a></p>
+            </div>
+            <div id="exifNote" class="mt-6 p-4 bg-yellow-900 text-yellow-300 rounded-lg">
+                <p class="text-sm">Note: Full EXIF data is generally only found in JPEG files. PNG and GIF files may only show basic file properties.</p>
+            </div>
+        </div>
+
+        <!-- Error/Message Modal -->
+        <div id="messageBox" class="fixed top-5 right-5 p-4 rounded-lg text-white font-medium shadow-xl transition-opacity duration-300 opacity-0 hidden" role="alert"></div>
+
+    </div>
+
+    <script>
+        // Set up references
+        const imageUpload = document.getElementById('imageUpload');
+        const resultsContainer = document.getElementById('resultsContainer');
+        const resultsList = document.getElementById('resultsList');
+        const imagePreview = document.getElementById('imagePreview');
+        const messageBox = document.getElementById('messageBox');
+        const gpsMapLinkDiv = document.getElementById('gpsMapLink');
+        const mapLink = document.getElementById('mapLink');
+        const mangleBtn = document.getElementById('mangleBtn');
+
+        // Global variable to hold the DOM element for the OS last modified date's value
+        let osDateElement = null;
+
+        /**
+         * Safely shows a temporary message in a floating box.
+         * @param {string} message - The message text.
+         * @param {string} type - 'success' or 'error'.
+         */
+        function showMessage(message, type) {
+            messageBox.textContent = message;
+            // Set base classes, keeping colors for success/error clearly visible
+            messageBox.className = 'fixed top-5 right-5 p-4 rounded-lg text-white font-medium shadow-xl transition-opacity duration-300';
+            messageBox.classList.remove('hidden', 'bg-green-500', 'bg-red-500');
+
+            if (type === 'success') {
+                messageBox.classList.add('bg-green-500');
+            } else {
+                messageBox.classList.add('bg-red-500');
+            }
+
+            // Show the box
+            setTimeout(() => {
+                messageBox.classList.remove('opacity-0');
+            }, 10); // small delay for transition
+
+            // Hide the box after 4 seconds
+            setTimeout(() => {
+                messageBox.classList.add('opacity-0');
+                // Hide fully after transition completes
+                setTimeout(() => {
+                    messageBox.classList.add('hidden');
+                }, 300);
+            }, 10000); // Increased duration for detailed messages
+        }
+
+        /**
+         * Clears the input field and results area, and resets buttons.
+         */
+        function clearInputAndResults() {
+            imageUpload.value = '';
+            imageUpload.disabled = false;
+            mangleBtn.disabled = false;
+            resultsList.innerHTML = '';
+            osDateElement = null; // Clear the reference
+            imagePreview.src = '';
+            imagePreview.classList.add('hidden');
+            resultsContainer.classList.add('hidden');
+            gpsMapLinkDiv.classList.add('hidden');
+            showMessage("Input and results cleared.", 'success');
+        }
+
+        /**
+         * Formats file size in bytes into human-readable format.
+         * @param {number} bytes - File size in bytes.
+         * @returns {string} Formatted size string.
+         */
+        function formatBytes(bytes) {
+            if (bytes === 0) return '0 Bytes';
+            const k = 1024;
+            const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+        }
+
+        /**
+         * Converts DMS (Degrees, Minutes, Seconds) array to Decimal Degrees.
+         */
+        function convertDMSToDD(dmsArray, direction) {
+            if (dmsArray && dmsArray.length === 3) {
+                const degrees = dmsArray[0].numerator / dmsArray[0].denominator;
+                const minutes = dmsArray[1].numerator / dmsArray[1].denominator;
+                const seconds = dmsArray[2].numerator / dmsArray[2].denominator;
+
+                let dd = degrees + (minutes / 60) + (seconds / 3600);
+
+                if (direction === 'S' || direction === 'W') {
+                    dd = -dd;
+                }
+                return parseFloat(dd.toFixed(6));
+            }
+            return null;
+        }
+
+        /**
+         * Helper function to append a single key-value result item to the list.
+         * @param {string} key - The metadata key/name.
+         * @param {string} value - The metadata value.
+         * @param {boolean} isOSDate - If true, store a reference to the value span.
+         */
+        function appendResultItem(key, value, isOSDate = false) {
+            const item = document.createElement('div');
+            item.className = 'result-item'; 
+            
+            // Key - using gray-300 for visibility in dark mode
+            const keySpan = `<span class="w-full sm:w-2/5 text-gray-300 font-bold">${key}:</span>`;
+            
+            // Value - using gray-100 for visibility in dark mode
+            const valueSpan = document.createElement('span');
+            valueSpan.className = 'w-full sm:w-3/5 text-gray-100 font-medium break-words';
+            valueSpan.textContent = value;
+
+            item.innerHTML = keySpan; // Add key first
+            item.appendChild(valueSpan); // Append value span
+            resultsList.appendChild(item);
+            
+            if (isOSDate) {
+                osDateElement = valueSpan; // Store reference to the OS date element
+            }
+        }
+
+        /**
+         * Helper function to add a section header to the results list.
+         */
+        function appendSectionHeader(title, spacer = false) {
+            const header = document.createElement('h4');
+            // Using teal-400 for contrast in dark mode, and gray-700 for the divider
+            header.className = `text-lg font-semibold text-teal-400 ${spacer ? 'mt-6 pt-4 border-t-2 border-teal-700' : 'mt-2'} mb-3`;
+            header.textContent = title;
+            resultsList.appendChild(header);
+        }
+
+
+        /**
+         * Extracts and displays metadata from the uploaded image file.
+         */
+        function extractImageMetadata() {
+            const file = imageUpload.files[0];
+
+            if (!file) {
+                clearInputAndResults();
+                return;
+            }
+            
+            // Reset state before extraction
+            resultsList.innerHTML = '';
+            osDateElement = null;
+            gpsMapLinkDiv.classList.add('hidden');
+            resultsContainer.classList.remove('hidden');
+            mangleBtn.disabled = false; // Enable mangle button for new file
+
+            try {
+                // 1. Extract basic file properties
+                let basicMetadata = {
+                    'File Name': file.name,
+                    'File Type (MIME)': file.type || 'Unknown',
+                    'File Size': formatBytes(file.size),
+                    // Note: This OS date is read from the local file system on upload and cannot be modified by the script.
+                    'Last Modified Date (OS)': new Date(file.lastModified).toLocaleString(), 
+                };
+
+                // 2. Use FileReader to get image data (for preview and dimensions)
+                const reader = new FileReader();
+                
+                reader.onload = function(e) {
+                    const dataUrl = e.target.result;
+                    imagePreview.src = dataUrl;
+                    imagePreview.classList.remove('hidden');
+
+                    const tempImg = new Image();
+                    
+                    tempImg.onload = function() {
+                        basicMetadata['Width'] = `${this.width} pixels`;
+                        basicMetadata['Height'] = `${this.height} pixels`;
+
+                        let exifData = {};
+                        let finalLat = null;
+                        let finalLon = null;
+
+                        // B. Get ALL EXIF data (only works reliably on JPEGs)
+                        if (typeof EXIF !== 'undefined' && file.type.includes('image/jpeg')) {
+                            EXIF.getData(tempImg, function() {
+                                const allExif = EXIF.getAllTags(this);
+
+                                for (const tag in allExif) {
+                                    if (tag !== 'MakerNote' && tag !== 'thumbnail' && allExif[tag] !== undefined) {
+                                        let value = allExif[tag];
+                                        if (Array.isArray(value)) {
+                                            value = value.map(v => 
+                                                (v.numerator !== undefined && v.denominator !== undefined) ? 
+                                                `${v.numerator}/${v.denominator} (${(v.numerator / v.denominator).toFixed(4)})` : 
+                                                String(v)
+                                            ).join(', ');
+                                        }
+                                        exifData[tag] = String(value);
+                                    }
+                                }
+
+                                const latArray = allExif.GPSLatitude;
+                                const latRef = allExif.GPSLatitudeRef;
+                                const lonArray = allExif.GPSLongitude;
+                                const lonRef = allExif.GPSLongitudeRef;
+                                
+                                if (latArray && latRef && lonArray && lonRef) {
+                                    finalLat = convertDMSToDD(latArray, latRef);
+                                    finalLon = convertDMSToDD(lonArray, lonRef);
+                                }
+
+                                if (finalLat !== null && finalLon !== null) {
+                                    basicMetadata['GPS Status'] = 'Found';
+                                    basicMetadata['GPS Latitude (Decimal)'] = finalLat;
+                                    basicMetadata['GPS Longitude (Decimal)'] = finalLon;
+                                    mapLink.href = `https://www.google.com/maps/search/?api=1&query=${finalLat},${finalLon}`;
+                                    gpsMapLinkDiv.classList.remove('hidden');
+                                } else {
+                                    basicMetadata['GPS Status'] = 'Not Found';
+                                    gpsMapLinkDiv.classList.add('hidden');
+                                }
+
+                                populateResults(basicMetadata, exifData);
+                                showMessage("All available metadata extracted successfully!", 'success');
+                            });
+                        } else {
+                            basicMetadata['EXIF Status'] = 'Not available (Requires JPEG)';
+                            populateResults(basicMetadata, null);
+                            showMessage("Extracted basic file data. Full EXIF/GPS extraction is only available for JPEGs.", 'success');
+                        }
+                    };
+                    tempImg.onerror = function() {
+                        basicMetadata['Width'] = 'Could not determine';
+                        basicMetadata['Height'] = 'Could not determine';
+                        populateResults(basicMetadata, null);
+                        showMessage("Extracted basic file data, but failed to load image dimensions.", 'error');
+                    };
+                    tempImg.src = dataUrl; 
+                };
+
+                reader.onerror = function(error) {
+                    console.error("FileReader Error:", error);
+                    showMessage("Error reading the file.", 'error');
+                    resultsContainer.classList.add('hidden');
+                };
+
+                reader.readAsDataURL(file);
+
+            } catch (error) {
+                console.error("Extraction Error:", error);
+                showMessage("An unexpected error occurred during processing.", 'error');
+                resultsContainer.classList.add('hidden');
+            }
+        }
+
+        /**
+         * Populates the results list with separated sections for basic and EXIF data.
+         * The 'Last Modified Date (OS)' is tracked via the osDateElement global variable.
+         */
+        function populateResults(basicData, exifData = null) {
+            resultsList.innerHTML = '';
+            osDateElement = null; // Reset reference
+            
+            // 1. Display Basic File Data & Dimensions
+            appendSectionHeader("File Properties and Dimensions");
+            for (const [key, value] of Object.entries(basicData)) {
+                // Pass true for the OS date element to store its reference
+                const isOsDate = key === 'Last Modified Date (OS)';
+                appendResultItem(key, value, isOsDate);
+            }
+            
+            // 2. Display All EXIF Data
+            if (exifData && Object.keys(exifData).length > 0) {
+                appendSectionHeader("Detailed EXIF Tags (All Found Tags)", true);
+                for (const [key, value] of Object.entries(exifData)) {
+                     appendResultItem(key, value);
+                }
+            } else if (exifData !== null) {
+                appendSectionHeader("Detailed EXIF Tags", true);
+                appendResultItem("EXIF Data Status", "No detailed EXIF tags found in this file.");
+            }
+        }
+        
+        /**
+         * Generates a short, random hexadecimal string (e.g., 'a3f1').
+         */
+        function generateRandomHex() {
+            // Generates a 4-character hex string
+            return Math.floor((1 + Math.random()) * 0x10000)
+                .toString(16)
+                .substring(1);
+        }
+
+        /**
+         * Generates a string that looks like a scrambled date (e.g., '04-22-26D9 7C:FA:3A').
+         */
+        function generateScrambledDateString() {
+            // Generate parts that look like date/time but are random hex/numbers
+            const day = Math.floor(Math.random() * 28 + 1).toString().padStart(2, '0');
+            const month = Math.floor(Math.random() * 12 + 1).toString().padStart(2, '0');
+            // Random 4-character hex for the year slot
+            const yearHex = (Math.floor(Math.random() * 0x8999) + 0x1000).toString(16).toUpperCase(); 
+            // Random 2-character hex for time slots
+            const hourHex = (Math.floor(Math.random() * 0xFF)).toString(16).padStart(2, '0').toUpperCase(); 
+            const minuteHex = (Math.floor(Math.random() * 0xFF)).toString(16).padStart(2, '0').toUpperCase();
+            const secondHex = (Math.floor(Math.random() * 0xFF)).toString(16).padStart(2, '0').toUpperCase();
+
+            return `${month}-${day}-${yearHex} ${hourHex}:${minuteHex}:${secondHex} (SCRAMBLED)`;
+        }
+
+        /**
+         * Initiates the metadata mangling process (stripping EXIF) and triggers download.
+         */
+        function mangleMetadata() {
+            const file = imageUpload.files[0];
+            if (!file) {
+                showMessage('Please upload an image first.', 'error');
+                return;
+            }
+
+            // Disable buttons to prevent re-mangling before file clear
+            imageUpload.disabled = true;
+            mangleBtn.disabled = true;
+            
+            const randomHex = generateRandomHex();
+            const scrambledDate = generateScrambledDateString(); 
+            const originalFilename = file.name;
+            const mangledFilename = `${randomHex}-stripped_${originalFilename}`;
+
+            if (!file.type.includes('image/jpeg')) {
+                // Non-JPEG handling
+                triggerDownload(new Blob([file], { type: file.type }), mangledFilename);
+                if (osDateElement) { osDateElement.textContent = scrambledDate; }
+                const message = `Metadata stripping is only reliable for JPEG files. Downloading as: ${mangledFilename}. The file's internal date metadata was likely already minimal. The displayed date has been visually scrambled.`;
+                showMessage(message, 'error');
+                return;
+            }
+
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                const arrayBuffer = e.target.result;
+                const mangledBlob = stripExifData(arrayBuffer, file.type);
+                
+                if (mangledBlob) {
+                    triggerDownload(mangledBlob, mangledFilename);
+                    
+                    // Visually scramble the OS date element
+                    if (osDateElement) {
+                        osDateElement.textContent = scrambledDate;
+                    }
+
+                    const message = `Success! Internal metadata (GPS, Camera Model, internal dates) was permanently removed. We have visually scrambled the "Last Modified Date (OS)" on this display for effect. Downloaded file name: ${mangledFilename}`;
+                    showMessage(message, 'success');
+                    
+                } else {
+                    showMessage('Failed to process the JPEG file for stripping.', 'error');
+                    // Re-enable in case of processing error
+                    imageUpload.disabled = false;
+                    mangleBtn.disabled = false;
+                }
+            };
+            reader.onerror = () => {
+                showMessage('Error reading file for stripping.', 'error');
+                imageUpload.disabled = false;
+                mangleBtn.disabled = false;
+            };
+            reader.readAsArrayBuffer(file);
+        }
+
+        /**
+         * Strips the APP1 (EXIF) segment from a JPEG file.
+         */
+        function stripExifData(arrayBuffer, mimeType) {
+            const dataView = new DataView(arrayBuffer);
+            
+            if (dataView.byteLength < 2 || dataView.getUint16(0) !== 0xFFD8) {
+                return null;
+            }
+
+            let offset = 2;
+            
+            while (offset < dataView.byteLength) {
+                const marker = dataView.getUint16(offset);
+                
+                if (marker === 0xFFE1) {
+                    const segmentLength = dataView.getUint16(offset + 2) + 2; 
+                    
+                    const beforeExif = arrayBuffer.slice(0, offset);
+                    const afterExif = arrayBuffer.slice(offset + segmentLength);
+                    
+                    const newBuffer = new Uint8Array(beforeExif.byteLength + afterExif.byteLength);
+                    newBuffer.set(new Uint8Array(beforeExif), 0);
+                    newBuffer.set(new Uint8Array(afterExif), beforeExif.byteLength);
+
+                    return new Blob([newBuffer.buffer], { type: mimeType });
+
+                } else if (marker >= 0xFFE0 && marker <= 0xFFEF) {
+                    const segmentLength = dataView.getUint16(offset + 2) + 2;
+                    offset += segmentLength;
+                } else if (marker >= 0xFFC0 && marker <= 0xFFDF) {
+                    // Start of Scan (SOS) or other terminal markers
+                    break;
+                } else {
+                     offset += 2;
+                }
+                
+                if (offset >= dataView.byteLength) {
+                    break;
+                }
+            }
+            
+            return new Blob([arrayBuffer], { type: mimeType });
+        }
+
+        /**
+         * Triggers a browser download for a given Blob.
+         */
+        function triggerDownload(blob, filename) {
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(a.href);
+        }
+
+    </script>
+</body>
+</html>
